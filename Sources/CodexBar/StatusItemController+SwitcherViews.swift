@@ -123,11 +123,6 @@ final class ProviderSwitcherView: NSView {
                     image: segment.image,
                     target: self,
                     action: #selector(self.handleSelection(_:)))
-                // Stacked tabs have a fixed-height icon/title cell (plus the quota bar). Wrapping
-                // a long provider name makes its stack taller than neighboring tabs and shifts
-                // both the icon and title upward. Keep the title on one line and truncate it
-                // consistently with the other crowded switcher labels.
-                stacked.setAllowsTwoLineTitle(false)
                 if self.rowCount >= 4 {
                     stacked.setTitleFontSize(NSFont.smallSystemFontSize - 3)
                 }
