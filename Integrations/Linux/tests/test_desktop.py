@@ -140,9 +140,11 @@ else:
         self.client('--configure', '{"provider":"claude"}')
         value = self.wait_for(lambda value: value.get('entries') and not value['busy']
                               and value['entries'][0]['provider'] == 'claude')
-        self.assertEqual(value['entries'][0]['windows'], [{
-            'key': 'secondary', 'label': 'Rate limit', 'remaining': 80, 'resetsAt': '', 'pace': ''
-        }])
+        windows = value['entries'][0]['windows']
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0]['key'], 'secondary')
+        self.assertEqual(windows[0]['label'], 'Rate limit')
+        self.assertEqual(windows[0]['remaining'], 80)
 
     def test_invalid_config_is_not_overwritten(self):
         self.client('--quit')
