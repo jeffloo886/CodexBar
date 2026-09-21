@@ -49,7 +49,7 @@ final class V0ScreenshotRenderTests: XCTestCase {
                     ? #"{"billingType":"legacy","data":{"limit":1000}}"#
                     : """
                     {"billingType":"token","data":{"balance":{"remaining":750,"total":1000},
-                    "billingCycle":{"end":1800003600}}}
+                    "billingCycle":{"end":1800003600},"onDemand":{"balance":120}}}
                     """
                 let body = request.url?.path == "/v1/user/billing" ? billing
                     : #"{"limit":100,"remaining":80,"reset":1800001800}"#
