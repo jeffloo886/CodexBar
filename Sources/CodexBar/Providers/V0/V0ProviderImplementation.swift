@@ -30,7 +30,7 @@ struct V0ProviderImplementation: ProviderImplementation {
             ProviderSettingsFieldDescriptor(
                 id: "v0-api-key",
                 title: "API key",
-                subtitle: "Stored in ~/.codexbar/config.json. Create one in v0 settings or set V0_API_KEY.",
+                subtitle: "Stored in ~/.config/codexbar/config.json. Create one in v0 settings or set V0_API_KEY.",
                 kind: .secure,
                 placeholder: "v0_...",
                 binding: context.providerConfigBinding(.apiKey),
@@ -38,7 +38,7 @@ struct V0ProviderImplementation: ProviderImplementation {
                     ProviderSettingsActionDescriptor.openURL(
                         id: "v0-open-api-keys",
                         title: "Open v0 API keys",
-                        url: URL(string: "https://v0.dev/chat/settings/keys")),
+                        url: URL(string: "https://v0.app/settings/keys")),
                 ],
                 isVisible: nil),
             ProviderSettingsFieldDescriptor(

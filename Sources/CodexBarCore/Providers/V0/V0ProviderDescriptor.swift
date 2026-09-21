@@ -11,7 +11,7 @@ public enum V0ProviderDescriptor {
         ],
         resolve: V0SettingsReader.apiKey,
         missingCredentialMessage: { _ in
-            "v0 API key not configured. Create one at v0.dev/chat/settings/keys."
+            "v0 API key not configured. Create one at v0.app/settings/keys."
         })
 
     static func makeDescriptor() -> ProviderDescriptor {
@@ -35,8 +35,7 @@ public enum V0ProviderDescriptor {
                 usesAccountFallback: false,
                 usesDetailBackedWindow: true,
                 browserCookieOrder: nil,
-                dashboardURL: "https://v0.dev",
-                subscriptionDashboardURL: "https://v0.dev/chat/settings/keys",
+                dashboardURL: "https://v0.app/settings/billing",
                 statusPageURL: nil,
                 statusLinkURL: nil),
             branding: ProviderBranding(
