@@ -3,6 +3,7 @@ import Foundation
 #if os(macOS)
 import Darwin
 import LocalAuthentication
+import os.lock
 import Security
 #endif
 
@@ -407,6 +408,17 @@ public enum KeychainAccessPreflight {
         return inspectionIncomplete ? .indeterminate : .rejected
     }
 
+    /// Validating a stored trusted application against an executable runs a full static code-signature
+    /// check of that executable's bundle — reading and hashing every sealed resource, which costs tens of
+    /// milliseconds for a large app. The decrypt ACL is re-read on every preflight, so the same
+    /// (trusted application, executable) pair gets revalidated many times per refresh across providers and
+    /// browsers without the answer ever changing.
+    ///
+    /// The verdict depends only on the stored trust identity and the bytes on disk, so it is memoized on
+    /// both: the trusted application's own serialized data plus the executable's filesystem identity
+    /// (device, inode, size, mtime). A replaced or rewritten executable yields a different identity and is
+    /// revalidated. Nothing about the ACL evaluation itself is cached — callers still read the live ACL and
+    /// prompt selector on every preflight.
     static func trustedApplication(
         _ application: SecTrustedApplication,
         validatesExecutableAt path: String) -> OSStatus?
@@ -415,8 +427,98 @@ public enum KeychainAccessPreflight {
             named: "SecTrustedApplicationValidateWithPath",
             as: SecTrustedApplicationValidateWithPathFunction.self)
         else { return nil }
+        guard let key = self.validationCacheKey(for: application, path: path) else {
+            // Without a stable key the verdict cannot be memoized safely; validate as before.
+            return self.performValidation(application, using: validate, at: path)
+        }
+        if let cached = self.validationCache.withLock({ $0[key] }) {
+            return cached
+        }
+        let status = self.performValidation(application, using: validate, at: path)
+        self.validationCache.withLock { cache in
+            // Bounded so a long-lived process cannot accumulate entries. The working set is one trusted
+            // application per ACL entry times the invoking executable paths, far below this bound.
+            if cache.count >= self.validationCacheCapacity {
+                cache.removeAll(keepingCapacity: true)
+            }
+            cache[key] = status
+        }
+        return status
+    }
+
+    private static func performValidation(
+        _ application: SecTrustedApplication,
+        using validate: SecTrustedApplicationValidateWithPathFunction,
+        at path: String) -> OSStatus
+    {
+        #if DEBUG
+        self.validationCallCounts.withLock { $0[path, default: 0] += 1 }
+        #endif
         return path.withCString { validate(application, $0) }
     }
+
+    private static func validationCacheKey(
+        for application: SecTrustedApplication,
+        path: String) -> ValidationCacheKey?
+    {
+        guard let data = self.trustedApplicationData(application),
+              let executable = ExecutableIdentity(path: path)
+        else { return nil }
+        return ValidationCacheKey(trustedApplicationData: data, path: path, executable: executable)
+    }
+
+    private static func trustedApplicationData(_ application: SecTrustedApplication) -> Data? {
+        guard let copyData = self.securityFunction(
+            named: "SecTrustedApplicationCopyData",
+            as: SecTrustedApplicationCopyDataFunction.self)
+        else { return nil }
+        var raw: Unmanaged<CFData>?
+        guard copyData(application, &raw) == errSecSuccess, let raw else { return nil }
+        return raw.takeRetainedValue() as Data
+    }
+
+    /// Filesystem identity of an executable. Any rewrite, replacement, or truncation changes at least one
+    /// field, so a memoized verdict cannot outlive the bytes it was computed from.
+    private struct ExecutableIdentity: Hashable {
+        let device: Int64
+        let inode: UInt64
+        let size: Int64
+        let modifiedSeconds: Int64
+        let modifiedNanoseconds: Int64
+
+        init?(path: String) {
+            var info = stat()
+            guard stat(path, &info) == 0 else { return nil }
+            self.device = Int64(info.st_dev)
+            self.inode = UInt64(info.st_ino)
+            self.size = Int64(info.st_size)
+            self.modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
+            self.modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        }
+    }
+
+    private struct ValidationCacheKey: Hashable {
+        let trustedApplicationData: Data
+        let path: String
+        let executable: ExecutableIdentity
+    }
+
+    static let validationCacheCapacity = 64
+    private static let validationCache = OSAllocatedUnfairLock<[ValidationCacheKey: OSStatus]>(initialState: [:])
+
+    #if DEBUG
+    /// Keyed by path so concurrently running suites cannot perturb each other's counts.
+    private static let validationCallCounts = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])
+
+    /// Number of real `SecTrustedApplicationValidateWithPath` calls made for `path`.
+    static func trustedApplicationValidationCallCountForTesting(path: String) -> Int {
+        self.validationCallCounts.withLock { $0[path] ?? 0 }
+    }
+
+    static var trustedApplicationValidationCacheCountForTesting: Int {
+        self.validationCache.withLock { $0.count }
+    }
+    #endif
 
     private typealias SecKeychainItemCopyAccessFunction = @convention(c) (
         SecKeychainItem,
@@ -432,6 +534,9 @@ public enum KeychainAccessPreflight {
     private typealias SecTrustedApplicationValidateWithPathFunction = @convention(c) (
         SecTrustedApplication,
         UnsafePointer<CChar>) -> OSStatus
+    private typealias SecTrustedApplicationCopyDataFunction = @convention(c) (
+        SecTrustedApplication,
+        UnsafeMutablePointer<Unmanaged<CFData>?>) -> OSStatus
 
     private nonisolated(unsafe) static let securityFrameworkHandle: UnsafeMutableRawPointer? = dlopen(
         "/System/Library/Frameworks/Security.framework/Security",
