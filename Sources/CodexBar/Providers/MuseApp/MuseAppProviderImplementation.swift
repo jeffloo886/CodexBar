@@ -6,6 +6,8 @@ struct MuseAppProviderImplementation: ProviderImplementation {
 
     @MainActor
     func isAvailable(context _: ProviderAvailabilityContext) -> Bool {
-        MuseAppUsageProbe().isAvailable()
+        // Availability is deliberately optimistic so an enabled provider can run its guarded fetch and
+        // show the specific Accessibility/Muse/Settings recovery message.
+        true
     }
 }

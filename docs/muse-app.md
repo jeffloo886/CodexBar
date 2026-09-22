@@ -23,4 +23,10 @@ The provider reads the visible Accessibility tree only. It does not read Muse cr
 - **Free plan** weekly percentage and the displayed reset date.
 - **Additional tokens** percentage and the displayed remaining-token description.
 
+## Runtime evidence
+
+This redacted local smoke-test capture shows the Muse desktop usage page and the corresponding CodexBar provider selection. The reader uses only the visible Accessibility tree; no account identifier or credential is included.
+
+![Muse desktop usage shown in CodexBar](screenshots/muse-app-usage.png)
+
 Muse can change its settings UI text or accessibility structure. If the provider becomes unavailable after a Muse update, the UI parser may need to be adjusted.

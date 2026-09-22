@@ -28,31 +28,37 @@ public enum MuseAppUsageParser {
         case malformedUsage
     }
 
-    public static func parse(values: [String], now: Date = .now) throws -> MuseAppUsageData {
+    public static func parse(values: [String], now _: Date = .now) throws -> MuseAppUsageData {
         let text = values
             .map { $0.replacingOccurrences(of: "\\n", with: " ") }
             .joined(separator: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
 
+        let additionalTokensRange = text.range(of: "Additional tokens", options: .caseInsensitive)
+        let weeklyText = additionalTokensRange.map { String(text[..<$0.lowerBound]) } ?? text
+        let additionalText = additionalTokensRange.map { String(text[$0.lowerBound...]) }
+
         guard let weeklyPercent = Self.firstDouble(
             pattern: #"(?i)Free plan.*?(\d+(?:\.\d+)?)%\s+used"#,
-            in: text)
+            in: weeklyText)
         else {
             throw ParseError.usageUnavailable
         }
 
         guard let additionalPercent = Self.firstDouble(
             pattern: #"(?i)Additional tokens.*?(\d+(?:\.\d+)?)%\s+used"#,
-            in: text)
+            in: additionalText ?? "")
         else {
             throw ParseError.malformedUsage
         }
 
         let resetDescription = Self.firstMatch(
-            pattern: #"(?i)(Weekly limit resets on\s+[A-Za-z]{3,9}\s+\d{1,2})"#,
-            in: text) ?? "Weekly limit reset"
-        let resetDate = Self.parseResetDate(from: resetDescription, now: now)
-        let balance = Self.firstMatch(pattern: #"(?i)Additional tokens.*?\(([^)]+)\)"#, in: text)
+            pattern: #"(?i)(Weekly limit resets on\s+[A-Za-z]{3,9}\s+\d{1,2}(?:,?\s+\d{4})?)"#,
+            in: weeklyText) ?? "Weekly limit reset"
+        let resetDate = Self.parseResetDate(from: resetDescription)
+        let balance = Self.firstMatch(
+            pattern: #"(?i)Additional tokens.*?\(([^)]+)\)"#,
+            in: additionalText ?? "")
 
         return MuseAppUsageData(
             weeklyPercent: weeklyPercent,
@@ -78,21 +84,22 @@ public enum MuseAppUsageParser {
         return String(text[swiftRange])
     }
 
-    private static func parseResetDate(from description: String, now: Date) -> Date? {
-        let pattern = #"(?i)resets on\s+([A-Za-z]{3,9}\s+\d{1,2})"#
-        guard let monthDay = Self.firstMatch(pattern: pattern, in: description) else { return nil }
+    private static func parseResetDate(from description: String) -> Date? {
+        let pattern = #"(?i)resets on\s+([A-Za-z]{3,9}\s+\d{1,2}(?:,?\s+\d{4})?)"#
+        guard let monthDay = Self.firstMatch(pattern: pattern, in: description),
+              description.range(of: #"\b\d{4}\b"#, options: .regularExpression) != nil
+        else {
+            // Muse currently exposes only a month and day. Without the year and exact reset instant,
+            // returning a Date would invent a countdown (especially for a reset dated today).
+            return nil
+        }
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.dateFormat = "MMM d yyyy"
-        guard let calendar = formatter.calendar else { return nil }
-        let year = calendar.component(.year, from: now)
-        guard var date = formatter.date(from: "\(monthDay) \(year)") else { return nil }
-        if date < now, let nextYear = calendar.date(byAdding: .year, value: 1, to: date) {
-            date = nextYear
-        }
-        return date
+        let normalizedDate = monthDay.replacingOccurrences(of: ",", with: "")
+        return formatter.date(from: normalizedDate)
     }
 }
 
@@ -264,7 +271,9 @@ struct MuseAppLocalFetchStrategy: ProviderFetchStrategy {
     let kind: ProviderFetchKind = .localProbe
 
     func isAvailable(_: ProviderFetchContext) async -> Bool {
-        MuseAppUsageProbe().isAvailable()
+        // Keep the strategy eligible so fetch can surface the actionable Accessibility, application,
+        // settings-window, or usage guidance instead of collapsing it into "no available strategy".
+        true
     }
 
     func fetch(_: ProviderFetchContext) async throws -> ProviderFetchResult {

@@ -19,7 +19,7 @@ struct MuseAppProviderTests {
         #expect(data.additionalPercent == 0)
         #expect(data.weeklyResetDescription == "Weekly limit resets on Sep 26")
         #expect(data.additionalBalanceDescription == "1B tokens left")
-        #expect(data.weeklyResetsAt != nil)
+        #expect(data.weeklyResetsAt == nil)
     }
 
     @Test
@@ -27,6 +27,31 @@ struct MuseAppProviderTests {
         #expect(throws: MuseAppUsageParser.ParseError.malformedUsage) {
             try MuseAppUsageParser.parse(values: ["Free plan 2% used"])
         }
+    }
+
+    @Test
+    func `does not borrow additional token percentage for an incomplete weekly row`() {
+        #expect(throws: MuseAppUsageParser.ParseError.usageUnavailable) {
+            try MuseAppUsageParser.parse(values: [
+                "Free plan Weekly limit resets on Sep 26",
+                "Additional tokens 20% used (1B tokens left)",
+            ])
+        }
+    }
+
+    @Test
+    func `does not invent a reset instant for a date-only reset`() throws {
+        let calendar = Calendar(identifier: .gregorian)
+        let now = try #require(calendar.date(from: DateComponents(year: 2026, month: 9, day: 26, hour: 12)))
+        let data = try MuseAppUsageParser.parse(
+            values: [
+                "Free plan Weekly limit resets on Sep 26 2% used",
+                "Additional tokens 0% used (1B tokens left)",
+            ],
+            now: now)
+
+        #expect(data.weeklyResetsAt == nil)
+        #expect(data.weeklyResetDescription == "Weekly limit resets on Sep 26")
     }
 
     @Test
