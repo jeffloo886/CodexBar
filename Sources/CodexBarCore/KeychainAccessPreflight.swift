@@ -191,6 +191,17 @@ public enum KeychainAccessPreflight {
         }
     }
 
+    /// Async counterpart used by one complete provider refresh. Task-local inheritance shares the same
+    /// operation memo with child provider tasks, while its lifetime still ends when that refresh finishes.
+    public static func withMemoizedGenericPasswordChecks<T>(
+        _ operation: () async throws -> T,
+        isolation _: isolated (any Actor)? = #isolation) async rethrows -> T
+    {
+        try await self.$genericPasswordCheckMemo.withValue(GenericPasswordCheckMemo()) {
+            try await operation()
+        }
+    }
+
     public static func checkGenericPassword(service: String, account: String?) -> Outcome {
         let key = GenericPasswordKey(service: service, account: account)
         if let memo = self.genericPasswordCheckMemo {
@@ -414,31 +425,30 @@ public enum KeychainAccessPreflight {
     /// (trusted application, executable) pair gets revalidated many times per refresh across providers and
     /// browsers without the answer ever changing.
     ///
-    /// The verdict is memoized on the trusted application's full external representation (not just its
-    /// path — `SecTrustedApplicationCopyData` returns only the stored path string, so two ACL entries for
-    /// the same install path but different embedded code-signing requirements would otherwise collide;
-    /// `SecTrustedApplicationCopyExternalRepresentation` serializes the whole ACL subject, including the
-    /// requirement or legacy hash that `verifyToDisk` actually checks) plus the executable's filesystem
-    /// identity, so a replaced or rewritten binary is revalidated immediately rather than at the entry's
-    /// expiry.
+    /// A completed rejection is memoized on the trusted application's full external representation (not
+    /// just its path — `SecTrustedApplicationCopyData` returns only the stored path string, so two ACL
+    /// entries for the same install path but different embedded code-signing requirements would otherwise
+    /// collide; `SecTrustedApplicationCopyExternalRepresentation` serializes the whole ACL subject,
+    /// including the requirement or legacy hash that `verifyToDisk` actually checks) plus the executable's
+    /// filesystem identity, so a replaced or rewritten binary is revalidated immediately rather than at
+    /// the entry's expiry. Successful validation is deliberately not retained in this process-wide cache:
+    /// `SecStaticCodeCheckValidity` also covers sealed bundle resources, and no cheap identity can reliably
+    /// detect every resource mutation. Successful preflights are deduplicated only by the operation-scoped
+    /// generic-password memo above, whose lifetime is bounded by the current refresh/read operation.
     ///
-    /// Only stable outcomes are cached: `errSecSuccess` and a confirmed `CSSMERR_CSP_VERIFY_FAILED`
-    /// rejection. Anything else (a locked keychain, an I/O error, or any other transient failure the
-    /// validator can return) is never written to the cache, so it falls through to a real validation on
-    /// every call — preserving the existing bounded retry recovery in `checkGenericPasswordUncached`
-    /// instead of letting a single transient error freeze a provider's reads for the entry's lifetime.
+    /// Only a confirmed `CSSMERR_CSP_VERIFY_FAILED` rejection is retained in the process-wide cache.
+    /// Successes are scoped to the surrounding generic-password operation. Anything else (a locked
+    /// keychain, an I/O error, or any other transient failure the validator can return) is never written
+    /// to this cache, so it falls through to a real validation on every call — preserving the existing
+    /// bounded retry recovery in `checkGenericPasswordUncached` instead of letting a single transient
+    /// error freeze a provider's reads for the entry's lifetime.
     ///
     /// `SecStaticCodeCheckValidity`'s default flags validate every sealed resource under the bundle, not
-    /// just the executable file, so a resource edited without touching the executable would not otherwise
-    /// be caught by identity alone. Success and rejection get different exposure windows because the risk
-    /// they bound is not the same: a success surviving past its truth authorizes a preflight that should
-    /// now fail, while a rejection surviving past its truth only delays a legitimate read. Rejections use
-    /// `rejectionCacheTTL`, matching the retry deadline #3301 already established for that cooldown.
-    /// Successes use the much shorter `successCacheTTL` — long enough to cover one refresh's fan-out
-    /// across providers and browsers (bursts measured under 20 seconds), short enough to never bridge into
-    /// the next scheduled refresh, so a resource edited between refreshes is never masked by more than one
-    /// cycle's worth of staleness. Nothing about the ACL evaluation itself is cached — callers still read
-    /// the live ACL and prompt selector on every preflight.
+    /// just the executable file. Reusing a successful process-wide result after a resource edit would let
+    /// an obsolete grant reach a credential-read attempt, so only completed signature mismatches use the
+    /// persistent rejection cooldown. Nothing about the ACL evaluation itself is cached — callers still
+    /// read the live ACL and prompt selector on every preflight, and successful validation is shared only
+    /// inside the explicit operation/refresh scope described above.
     static func trustedApplication(
         _ application: SecTrustedApplication,
         validatesExecutableAt path: String,
@@ -480,7 +490,7 @@ public enum KeychainAccessPreflight {
     private static func cacheTTL(for status: OSStatus) -> TimeInterval? {
         switch status {
         case errSecSuccess:
-            self.successCacheTTL
+            nil
         case OSStatus(CSSMERR_CSP_VERIFY_FAILED):
             self.rejectionCacheTTL
         default:
@@ -556,11 +566,6 @@ public enum KeychainAccessPreflight {
     }
 
     static let validationCacheCapacity = 64
-    /// A success reused past its truth wrongly authorizes a preflight that should now fail, so this window
-    /// stays short: comfortably above the longest single-refresh validation burst actually measured (under
-    /// 20 seconds), comfortably below the 60-second refresh interval, so it never reaches into the next
-    /// scheduled refresh.
-    static let successCacheTTL: TimeInterval = 30
     /// A rejection reused past its truth only delays a legitimate read, the same risk #3301's cooldown
     /// already accepted for this file's adjacent rejected-ACL case — reuse that precedent's window.
     static let rejectionCacheTTL: TimeInterval = 5 * 60

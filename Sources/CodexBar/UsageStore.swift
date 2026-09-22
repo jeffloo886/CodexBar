@@ -801,79 +801,82 @@ final class UsageStore {
         let availableRefreshProviders = Set(self.enabledProviders())
         let refreshStartedAt = Date()
 
-        let completedRefresh = await ProviderRefreshContext.$current.withValue(refreshPhase) {
-            self.isRefreshing = true
-            defer {
-                self.isRefreshing = false
-                self.hasCompletedInitialRefresh = true
-                self.startupConnectivityRetryRefreshActive = false
-            }
+        let completedRefresh = await KeychainAccessPreflight.withMemoizedGenericPasswordChecks {
+            await ProviderRefreshContext.$current.withValue(refreshPhase) {
+                self.isRefreshing = true
+                defer {
+                    self.isRefreshing = false
+                    self.hasCompletedInitialRefresh = true
+                    self.startupConnectivityRetryRefreshActive = false
+                }
 
-            self.clearDisabledProviderState(enabledProviders: enabledProviderSet)
-            self.clearUnavailableProviderState(
-                displayEnabledProviders: enabledProviderSet,
-                availableProviders: availableRefreshProviders)
-            self.scheduleStorageFootprintRefresh(for: displayEnabledProviders.compactMap(\.firstPartyProvider))
+                self.clearDisabledProviderState(enabledProviders: enabledProviderSet)
+                self.clearUnavailableProviderState(
+                    displayEnabledProviders: enabledProviderSet,
+                    availableProviders: availableRefreshProviders)
+                self.scheduleStorageFootprintRefresh(for: displayEnabledProviders.compactMap(\.firstPartyProvider))
 
-            await withTaskGroup(of: Void.self) { group in
-                for instanceID in refreshProviders {
-                    guard let provider = instanceID.firstPartyProvider else {
-                        group.addTask { await self.refreshUserPlugin(instanceID) }
-                        continue
+                await withTaskGroup(of: Void.self) { group in
+                    for instanceID in refreshProviders {
+                        guard let provider = instanceID.firstPartyProvider else {
+                            group.addTask { await self.refreshUserPlugin(instanceID) }
+                            continue
+                        }
+                        group.addTask {
+                            await self.refreshProvider(
+                                provider,
+                                coalesceIfRefreshing: coalesceProviderRefreshesOverride ??
+                                    (ProviderInteractionContext.current == .background))
+                        }
+                        if availableRefreshProviders.contains(provider.instanceID) {
+                            group.addTask { await self.refreshProviderStatus(provider) }
+                        }
                     }
-                    group.addTask {
-                        await self.refreshProvider(
-                            provider,
-                            coalesceIfRefreshing: coalesceProviderRefreshesOverride ??
-                                (ProviderInteractionContext.current == .background))
-                    }
-                    if availableRefreshProviders.contains(provider.instanceID) {
-                        group.addTask { await self.refreshProviderStatus(provider) }
+                    if enrichmentMode == .forcedForeground {
+                        group.addTask { await self.refreshCreditsNow(minimumSnapshotUpdatedAt: refreshStartedAt) }
                     }
                 }
+                guard !Task.isCancelled else { return false }
+
+                if enrichmentMode == .automatic {
+                    self.scheduleCreditsRefreshIfNeeded(minimumSnapshotUpdatedAt: refreshStartedAt)
+                }
+
                 if enrichmentMode == .forcedForeground {
-                    group.addTask { await self.refreshCreditsNow(minimumSnapshotUpdatedAt: refreshStartedAt) }
+                    await self.refreshTokenUsageSequenceNow(force: true)
+                } else if enrichmentMode == .automatic {
+                    // Token-cost usage can be slow; run it outside regular/menu-open refreshes so we don't block UI.
+                    self.scheduleTokenRefresh()
                 }
-            }
-            guard !Task.isCancelled else { return false }
 
-            if enrichmentMode == .automatic {
-                self.scheduleCreditsRefreshIfNeeded(minimumSnapshotUpdatedAt: refreshStartedAt)
-            }
+                // OpenAI web scrape depends on the current Codex account email (which can change after login/account
+                // switch). Run this after Codex usage refresh so we don't accidentally scrape with stale credentials.
+                if enrichmentMode == .forcedBackground {
+                    // Account ownership must fail closed before the responsive foreground pass returns;
+                    // only the expensive dashboard fetch belongs in the deferred enrichment tail.
+                    self.syncOpenAIWebState()
+                } else {
+                    await self.refreshOpenAIWebAfterProviderRefresh(
+                        force: enrichmentMode == .forcedForeground,
+                        refreshPhase: openAIWebRefreshPhase)
+                }
 
-            if enrichmentMode == .forcedForeground {
-                await self.refreshTokenUsageSequenceNow(force: true)
-            } else if enrichmentMode == .automatic {
-                // Token-cost usage can be slow; run it outside regular/menu-open refreshes so we don't block UI.
-                self.scheduleTokenRefresh()
-            }
+                if enrichmentMode == .forcedForeground, self.openAIDashboardRequiresLogin {
+                    // Provider-specific by design: failed OpenAI attachment retries Codex usage before credits
+                    // enrichment.
+                    await self.refreshProvider(.codex)
+                    await self.refreshCreditsNow(minimumSnapshotUpdatedAt: refreshStartedAt)
+                }
 
-            // OpenAI web scrape depends on the current Codex account email (which can change after login/account
-            // switch). Run this after Codex usage refresh so we don't accidentally scrape with stale credentials.
-            if enrichmentMode == .forcedBackground {
-                // Account ownership must fail closed before the responsive foreground pass returns;
-                // only the expensive dashboard fetch belongs in the deferred enrichment tail.
-                self.syncOpenAIWebState()
-            } else {
-                await self.refreshOpenAIWebAfterProviderRefresh(
-                    force: enrichmentMode == .forcedForeground,
-                    refreshPhase: openAIWebRefreshPhase)
+                self.persistWidgetSnapshot(reason: "refresh")
+                if let forcedBackgroundGeneration {
+                    self.enqueueForcedRefreshEnrichment(
+                        generation: forcedBackgroundGeneration,
+                        refreshStartedAt: refreshStartedAt,
+                        openAIWebRefreshPhase: openAIWebRefreshPhase)
+                }
+                return true
             }
-
-            if enrichmentMode == .forcedForeground, self.openAIDashboardRequiresLogin {
-                // Provider-specific by design: failed OpenAI attachment retries Codex usage before credits enrichment.
-                await self.refreshProvider(.codex)
-                await self.refreshCreditsNow(minimumSnapshotUpdatedAt: refreshStartedAt)
-            }
-
-            self.persistWidgetSnapshot(reason: "refresh")
-            if let forcedBackgroundGeneration {
-                self.enqueueForcedRefreshEnrichment(
-                    generation: forcedBackgroundGeneration,
-                    refreshStartedAt: refreshStartedAt,
-                    openAIWebRefreshPhase: openAIWebRefreshPhase)
-            }
-            return true
         }
 
         guard completedRefresh else { return false }

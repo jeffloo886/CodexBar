@@ -12,7 +12,7 @@ import Security
 /// No Keychain item is accessed: trust objects are built from fixture binaries in a temporary directory.
 struct KeychainTrustedApplicationValidationCacheTests {
     @Test
-    func `repeated validation of one executable runs a single real code-signature check`() throws {
+    func `successful validation is not retained in the process-wide cache`() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let trusted = try fixture.trustedApplication(at: fixture.helper)
@@ -26,7 +26,7 @@ struct KeychainTrustedApplicationValidationCacheTests {
         for _ in 0..<8 {
             #expect(KeychainAccessPreflight.trustedApplication(trusted, validatesExecutableAt: path) == first)
         }
-        #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 1)
+        #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 9)
     }
 
     @Test
@@ -139,7 +139,7 @@ struct KeychainTrustedApplicationValidationCacheTests {
     }
 
     @Test
-    func `a cached success expires after the shorter success TTL and is revalidated`() throws {
+    func `successful validation is rechecked even before the rejection TTL`() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let trusted = try fixture.trustedApplication(at: fixture.helper)
@@ -150,23 +150,12 @@ struct KeychainTrustedApplicationValidationCacheTests {
         #expect(first == errSecSuccess)
         #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 1)
 
-        // Still within the TTL: the cached verdict is reused, no new validation.
-        let stillCached = KeychainAccessPreflight.trustedApplication(
+        // Successful results are never retained by the process-wide cache, even immediately afterward.
+        let second = KeychainAccessPreflight.trustedApplication(
             trusted,
             validatesExecutableAt: path,
-            now: start.addingTimeInterval(KeychainAccessPreflight.successCacheTTL - 1))
-        #expect(stillCached == first)
-        #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 1)
-
-        // Past the TTL: revalidated even though nothing about the identity changed. This is what bounds
-        // the staleness window for a sealed resource edited without touching the executable — an input the
-        // identity-based key alone cannot observe. The window is short specifically because reusing a
-        // stale SUCCESS wrongly authorizes a preflight that should now fail.
-        let afterExpiry = KeychainAccessPreflight.trustedApplication(
-            trusted,
-            validatesExecutableAt: path,
-            now: start.addingTimeInterval(KeychainAccessPreflight.successCacheTTL + 1))
-        #expect(afterExpiry == first)
+            now: start.addingTimeInterval(1))
+        #expect(second == first)
         #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 2)
     }
 
@@ -174,7 +163,7 @@ struct KeychainTrustedApplicationValidationCacheTests {
     /// already accepted for the adjacent rejected-ACL case), unlike a stale success, which wrongly
     /// authorizes. This proves the two outcomes really get different windows, not the same constant twice.
     @Test
-    func `a cached rejection uses the longer rejection TTL, not the success TTL`() throws {
+    func `a cached rejection uses the persistent rejection TTL`() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let trusted = try fixture.trustedApplication(at: fixture.helper)
@@ -186,11 +175,11 @@ struct KeychainTrustedApplicationValidationCacheTests {
         #expect(first == OSStatus(CSSMERR_CSP_VERIFY_FAILED))
         #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 1)
 
-        // Past the SUCCESS window but still within the (longer) rejection window: still cached.
+        // Rejections remain cached within their explicit cooldown.
         let stillCached = KeychainAccessPreflight.trustedApplication(
             trusted,
             validatesExecutableAt: path,
-            now: start.addingTimeInterval(KeychainAccessPreflight.successCacheTTL + 1))
+            now: start.addingTimeInterval(1))
         #expect(stillCached == first)
         #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 1)
 
@@ -203,12 +192,12 @@ struct KeychainTrustedApplicationValidationCacheTests {
         #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 2)
     }
 
-    /// Regression test for caching a transient/unrecognized validator status: only `errSecSuccess` and a
-    /// confirmed `CSSMERR_CSP_VERIFY_FAILED` rejection are settled, non-retryable facts. Anything else must
-    /// never be written to the cache, or it would silently defeat the bounded retry recovery elsewhere in
-    /// this file and freeze a provider's reads on a transient error for the entry's lifetime. A directory
-    /// path is real (so it has a valid filesystem identity and a cache key can be formed) but is not a
-    /// codesign-able executable, so the validator returns neither of the two cacheable outcomes.
+    /// Regression test for caching a transient/unrecognized validator status: only a confirmed
+    /// `CSSMERR_CSP_VERIFY_FAILED` rejection is a settled, non-retryable fact. Anything else must never be
+    /// written to the cache, or it would silently defeat the bounded retry recovery elsewhere in this file
+    /// and freeze a provider's reads on a transient error for the entry's lifetime. A directory path is
+    /// real (so it has a valid filesystem identity and a cache key can be formed) but is not a codesign-able
+    /// executable, so the validator returns neither cacheable outcome.
     @Test
     func `an unrecognized validator status is never cached`() throws {
         let fixture = try Fixture()
