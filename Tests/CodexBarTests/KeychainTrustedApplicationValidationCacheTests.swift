@@ -139,7 +139,7 @@ struct KeychainTrustedApplicationValidationCacheTests {
     }
 
     @Test
-    func `a cached verdict expires after the TTL and is revalidated`() throws {
+    func `a cached success expires after the shorter success TTL and is revalidated`() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let trusted = try fixture.trustedApplication(at: fixture.helper)
@@ -154,19 +154,79 @@ struct KeychainTrustedApplicationValidationCacheTests {
         let stillCached = KeychainAccessPreflight.trustedApplication(
             trusted,
             validatesExecutableAt: path,
-            now: start.addingTimeInterval(KeychainAccessPreflight.validationCacheTTL - 1))
+            now: start.addingTimeInterval(KeychainAccessPreflight.successCacheTTL - 1))
         #expect(stillCached == first)
         #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 1)
 
         // Past the TTL: revalidated even though nothing about the identity changed. This is what bounds
-        // the staleness window for a sealed resource edited without touching the executable, or an ACL
-        // repaired after a rejection — inputs the identity-based key alone cannot observe.
+        // the staleness window for a sealed resource edited without touching the executable — an input the
+        // identity-based key alone cannot observe. The window is short specifically because reusing a
+        // stale SUCCESS wrongly authorizes a preflight that should now fail.
         let afterExpiry = KeychainAccessPreflight.trustedApplication(
             trusted,
             validatesExecutableAt: path,
-            now: start.addingTimeInterval(KeychainAccessPreflight.validationCacheTTL + 1))
+            now: start.addingTimeInterval(KeychainAccessPreflight.successCacheTTL + 1))
         #expect(afterExpiry == first)
         #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 2)
+    }
+
+    /// A rejection surviving past its truth only delays a legitimate read (the risk #3301's cooldown
+    /// already accepted for the adjacent rejected-ACL case), unlike a stale success, which wrongly
+    /// authorizes. This proves the two outcomes really get different windows, not the same constant twice.
+    @Test
+    func `a cached rejection uses the longer rejection TTL, not the success TTL`() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let trusted = try fixture.trustedApplication(at: fixture.helper)
+        let mismatched = try fixture.makeExecutable(named: "Mismatched", from: "/bin/echo")
+        let path = mismatched.path
+        let start = Date()
+
+        let first = KeychainAccessPreflight.trustedApplication(trusted, validatesExecutableAt: path, now: start)
+        #expect(first == OSStatus(CSSMERR_CSP_VERIFY_FAILED))
+        #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 1)
+
+        // Past the SUCCESS window but still within the (longer) rejection window: still cached.
+        let stillCached = KeychainAccessPreflight.trustedApplication(
+            trusted,
+            validatesExecutableAt: path,
+            now: start.addingTimeInterval(KeychainAccessPreflight.successCacheTTL + 1))
+        #expect(stillCached == first)
+        #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 1)
+
+        // Past the rejection window: revalidated.
+        let afterExpiry = KeychainAccessPreflight.trustedApplication(
+            trusted,
+            validatesExecutableAt: path,
+            now: start.addingTimeInterval(KeychainAccessPreflight.rejectionCacheTTL + 1))
+        #expect(afterExpiry == first)
+        #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: path) == 2)
+    }
+
+    /// Regression test for caching a transient/unrecognized validator status: only `errSecSuccess` and a
+    /// confirmed `CSSMERR_CSP_VERIFY_FAILED` rejection are settled, non-retryable facts. Anything else must
+    /// never be written to the cache, or it would silently defeat the bounded retry recovery elsewhere in
+    /// this file and freeze a provider's reads on a transient error for the entry's lifetime. A directory
+    /// path is real (so it has a valid filesystem identity and a cache key can be formed) but is not a
+    /// codesign-able executable, so the validator returns neither of the two cacheable outcomes.
+    @Test
+    func `an unrecognized validator status is never cached`() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let trusted = try fixture.trustedApplication(at: fixture.helper)
+        let directoryPath = fixture.root.path
+
+        let first = KeychainAccessPreflight.trustedApplication(trusted, validatesExecutableAt: directoryPath)
+        #expect(first != errSecSuccess)
+        #expect(first != OSStatus(CSSMERR_CSP_VERIFY_FAILED))
+        #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(path: directoryPath) == 1)
+
+        // If this were cached, the count would stay at 1. It does not: every call re-validates.
+        for expectedCount in 2...4 {
+            _ = KeychainAccessPreflight.trustedApplication(trusted, validatesExecutableAt: directoryPath)
+            #expect(KeychainAccessPreflight.trustedApplicationValidationCallCountForTesting(
+                path: directoryPath) == expectedCount)
+        }
     }
 
     /// Constructs a `SecTrustedApplication` from an explicit `SecRequirement`, bypassing the on-disk

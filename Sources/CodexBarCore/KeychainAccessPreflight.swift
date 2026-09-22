@@ -420,11 +420,24 @@ public enum KeychainAccessPreflight {
     /// `SecTrustedApplicationCopyExternalRepresentation` serializes the whole ACL subject, including the
     /// requirement or legacy hash that `verifyToDisk` actually checks) plus the executable's filesystem
     /// identity, so a replaced or rewritten binary is revalidated immediately rather than at the entry's
-    /// expiry. `SecStaticCodeCheckValidity`'s default flags validate every sealed resource under the
-    /// bundle, not just the executable file, so a resource edited without touching the executable would
-    /// not otherwise be caught by identity alone; entries expire after `validationCacheTTL` so such a
-    /// change — or an ACL repaired after a rejection — is re-validated within a bounded window rather than
-    /// for the life of the process. Nothing about the ACL evaluation itself is cached — callers still read
+    /// expiry.
+    ///
+    /// Only stable outcomes are cached: `errSecSuccess` and a confirmed `CSSMERR_CSP_VERIFY_FAILED`
+    /// rejection. Anything else (a locked keychain, an I/O error, or any other transient failure the
+    /// validator can return) is never written to the cache, so it falls through to a real validation on
+    /// every call — preserving the existing bounded retry recovery in `checkGenericPasswordUncached`
+    /// instead of letting a single transient error freeze a provider's reads for the entry's lifetime.
+    ///
+    /// `SecStaticCodeCheckValidity`'s default flags validate every sealed resource under the bundle, not
+    /// just the executable file, so a resource edited without touching the executable would not otherwise
+    /// be caught by identity alone. Success and rejection get different exposure windows because the risk
+    /// they bound is not the same: a success surviving past its truth authorizes a preflight that should
+    /// now fail, while a rejection surviving past its truth only delays a legitimate read. Rejections use
+    /// `rejectionCacheTTL`, matching the retry deadline #3301 already established for that cooldown.
+    /// Successes use the much shorter `successCacheTTL` — long enough to cover one refresh's fan-out
+    /// across providers and browsers (bursts measured under 20 seconds), short enough to never bridge into
+    /// the next scheduled refresh, so a resource edited between refreshes is never masked by more than one
+    /// cycle's worth of staleness. Nothing about the ACL evaluation itself is cached — callers still read
     /// the live ACL and prompt selector on every preflight.
     static func trustedApplication(
         _ application: SecTrustedApplication,
@@ -445,15 +458,34 @@ public enum KeychainAccessPreflight {
             return cached.status
         }
         let status = self.performValidation(application, using: validate, at: path)
+        guard let ttl = self.cacheTTL(for: status) else {
+            // A transient outcome: leave any existing entry alone and never write one, so the next call
+            // — including the existing retry loop's own follow-up attempts — always re-validates.
+            return status
+        }
         self.validationCache.withLock { cache in
             // Bounded so a long-lived process cannot accumulate entries. The working set is one trusted
             // application per ACL entry times the invoking executable paths, far below this bound.
             if cache.count >= self.validationCacheCapacity {
                 cache.removeAll(keepingCapacity: true)
             }
-            cache[key] = CachedValidation(status: status, expiresAt: now.addingTimeInterval(self.validationCacheTTL))
+            cache[key] = CachedValidation(status: status, expiresAt: now.addingTimeInterval(ttl))
         }
         return status
+    }
+
+    /// `nil` means the outcome must never be cached. Only the two outcomes `verifyToDisk` can return as a
+    /// settled, non-retryable fact are eligible — an unrecognized status is treated as transient rather
+    /// than assumed safe to reuse.
+    private static func cacheTTL(for status: OSStatus) -> TimeInterval? {
+        switch status {
+        case errSecSuccess:
+            self.successCacheTTL
+        case OSStatus(CSSMERR_CSP_VERIFY_FAILED):
+            self.rejectionCacheTTL
+        default:
+            nil
+        }
     }
 
     private static func performValidation(
@@ -524,10 +556,14 @@ public enum KeychainAccessPreflight {
     }
 
     static let validationCacheCapacity = 64
-    /// Bounds staleness for changes identity alone cannot catch (a sealed resource edited without
-    /// touching the executable, or an ACL repaired after a rejection). Matches the retry deadline #3301
-    /// established for the adjacent rejected-ACL cooldown.
-    static let validationCacheTTL: TimeInterval = 5 * 60
+    /// A success reused past its truth wrongly authorizes a preflight that should now fail, so this window
+    /// stays short: comfortably above the longest single-refresh validation burst actually measured (under
+    /// 20 seconds), comfortably below the 60-second refresh interval, so it never reaches into the next
+    /// scheduled refresh.
+    static let successCacheTTL: TimeInterval = 30
+    /// A rejection reused past its truth only delays a legitimate read, the same risk #3301's cooldown
+    /// already accepted for this file's adjacent rejected-ACL case — reuse that precedent's window.
+    static let rejectionCacheTTL: TimeInterval = 5 * 60
     private static let validationCache =
         OSAllocatedUnfairLock<[ValidationCacheKey: CachedValidation]>(initialState: [:])
 
