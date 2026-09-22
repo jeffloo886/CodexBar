@@ -25,8 +25,12 @@ The provider reads the visible Accessibility tree only. It does not read Muse cr
 
 ## Runtime evidence
 
-This redacted local smoke-test capture shows the Muse desktop usage page and the corresponding CodexBar provider selection. The reader uses only the visible Accessibility tree; no account identifier or credential is included.
+The redacted source capture below was supplied from Muse's Settings → General → Usage page and shows the values that CodexBar reads. The reader uses only the visible Accessibility tree; no account identifier or credential is included.
 
-![Muse desktop usage shown in CodexBar](screenshots/muse-app-usage.png)
+![Muse desktop Settings Usage source](screenshots/muse-app-settings-usage.png)
+
+The rebuilt CodexBar card render below is a native AppKit render of the same card path used by the menu. It verifies that the timestamp-free `1B tokens left` value is rendered as balance detail, without a misleading reset prefix. The older local smoke capture is retained as `screenshots/muse-app-usage.png` for provider-selection context; it predates this presentation fix.
+
+![Muse balance detail in the rebuilt CodexBar card](screenshots/muse-app-fixed-balance.png)
 
 Muse can change its settings UI text or accessibility structure. If the provider becomes unavailable after a Muse update, the UI parser may need to be adjusted.

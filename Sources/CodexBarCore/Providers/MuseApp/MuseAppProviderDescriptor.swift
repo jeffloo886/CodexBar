@@ -256,7 +256,11 @@ public enum MuseAppProviderDescriptor {
                 primarySemanticWindow: .weekly,
                 secondarySemanticWindow: .weekly,
                 menuBarLayoutPrimaryLabel: "Free plan",
-                menuBarLayoutSecondaryLabel: "Additional tokens"),
+                menuBarLayoutSecondaryLabel: "Additional tokens",
+                menuCard: ProviderMenuCardPresentation(
+                    showsSecondaryBalanceDescription: true),
+                menu: ProviderMenuDescriptorPresentation(
+                    secondaryDescriptionMode: .detailWhenResetDatePresent)),
             fetchPlan: ProviderFetchPlan(
                 sourceModes: [.auto],
                 pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [MuseAppLocalFetchStrategy()] })),
