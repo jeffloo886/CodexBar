@@ -414,14 +414,22 @@ public enum KeychainAccessPreflight {
     /// (trusted application, executable) pair gets revalidated many times per refresh across providers and
     /// browsers without the answer ever changing.
     ///
-    /// The verdict depends only on the stored trust identity and the bytes on disk, so it is memoized on
-    /// both: the trusted application's own serialized data plus the executable's filesystem identity
-    /// (device, inode, size, mtime). A replaced or rewritten executable yields a different identity and is
-    /// revalidated. Nothing about the ACL evaluation itself is cached — callers still read the live ACL and
-    /// prompt selector on every preflight.
+    /// The verdict is memoized on the trusted application's full external representation (not just its
+    /// path — `SecTrustedApplicationCopyData` returns only the stored path string, so two ACL entries for
+    /// the same install path but different embedded code-signing requirements would otherwise collide;
+    /// `SecTrustedApplicationCopyExternalRepresentation` serializes the whole ACL subject, including the
+    /// requirement or legacy hash that `verifyToDisk` actually checks) plus the executable's filesystem
+    /// identity, so a replaced or rewritten binary is revalidated immediately rather than at the entry's
+    /// expiry. `SecStaticCodeCheckValidity`'s default flags validate every sealed resource under the
+    /// bundle, not just the executable file, so a resource edited without touching the executable would
+    /// not otherwise be caught by identity alone; entries expire after `validationCacheTTL` so such a
+    /// change — or an ACL repaired after a rejection — is re-validated within a bounded window rather than
+    /// for the life of the process. Nothing about the ACL evaluation itself is cached — callers still read
+    /// the live ACL and prompt selector on every preflight.
     static func trustedApplication(
         _ application: SecTrustedApplication,
-        validatesExecutableAt path: String) -> OSStatus?
+        validatesExecutableAt path: String,
+        now: Date = Date()) -> OSStatus?
     {
         guard let validate = self.securityFunction(
             named: "SecTrustedApplicationValidateWithPath",
@@ -431,8 +439,10 @@ public enum KeychainAccessPreflight {
             // Without a stable key the verdict cannot be memoized safely; validate as before.
             return self.performValidation(application, using: validate, at: path)
         }
-        if let cached = self.validationCache.withLock({ $0[key] }) {
-            return cached
+        if let cached = self.validationCache.withLock({ $0[key] }),
+           cached.expiresAt > now
+        {
+            return cached.status
         }
         let status = self.performValidation(application, using: validate, at: path)
         self.validationCache.withLock { cache in
@@ -441,7 +451,7 @@ public enum KeychainAccessPreflight {
             if cache.count >= self.validationCacheCapacity {
                 cache.removeAll(keepingCapacity: true)
             }
-            cache[key] = status
+            cache[key] = CachedValidation(status: status, expiresAt: now.addingTimeInterval(self.validationCacheTTL))
         }
         return status
     }
@@ -461,24 +471,29 @@ public enum KeychainAccessPreflight {
         for application: SecTrustedApplication,
         path: String) -> ValidationCacheKey?
     {
-        guard let data = self.trustedApplicationData(application),
+        guard let representation = self.trustedApplicationExternalRepresentation(application),
               let executable = ExecutableIdentity(path: path)
         else { return nil }
-        return ValidationCacheKey(trustedApplicationData: data, path: path, executable: executable)
+        return ValidationCacheKey(trustedApplicationRepresentation: representation, path: path, executable: executable)
     }
 
-    private static func trustedApplicationData(_ application: SecTrustedApplication) -> Data? {
-        guard let copyData = self.securityFunction(
-            named: "SecTrustedApplicationCopyData",
-            as: SecTrustedApplicationCopyDataFunction.self)
+    /// The full serialized ACL subject for this trusted application — its embedded code-signing
+    /// requirement (or, for legacy entries, hash), not merely the path it was constructed from. Two
+    /// `SecTrustedApplication` objects sharing a path but holding different requirements (for example, a
+    /// stale ACL entry alongside a freshly repaired one for the same install path) produce different
+    /// representations here, whereas `SecTrustedApplicationCopyData` would return identical bytes for both.
+    private static func trustedApplicationExternalRepresentation(_ application: SecTrustedApplication) -> Data? {
+        guard let copyExternal = self.securityFunction(
+            named: "SecTrustedApplicationCopyExternalRepresentation",
+            as: SecTrustedApplicationCopyExternalRepresentationFunction.self)
         else { return nil }
         var raw: Unmanaged<CFData>?
-        guard copyData(application, &raw) == errSecSuccess, let raw else { return nil }
+        guard copyExternal(application, &raw) == errSecSuccess, let raw else { return nil }
         return raw.takeRetainedValue() as Data
     }
 
     /// Filesystem identity of an executable. Any rewrite, replacement, or truncation changes at least one
-    /// field, so a memoized verdict cannot outlive the bytes it was computed from.
+    /// field, so a memoized verdict does not outlive the specific binary it was computed against.
     private struct ExecutableIdentity: Hashable {
         let device: Int64
         let inode: UInt64
@@ -498,13 +513,23 @@ public enum KeychainAccessPreflight {
     }
 
     private struct ValidationCacheKey: Hashable {
-        let trustedApplicationData: Data
+        let trustedApplicationRepresentation: Data
         let path: String
         let executable: ExecutableIdentity
     }
 
+    private struct CachedValidation {
+        let status: OSStatus
+        let expiresAt: Date
+    }
+
     static let validationCacheCapacity = 64
-    private static let validationCache = OSAllocatedUnfairLock<[ValidationCacheKey: OSStatus]>(initialState: [:])
+    /// Bounds staleness for changes identity alone cannot catch (a sealed resource edited without
+    /// touching the executable, or an ACL repaired after a rejection). Matches the retry deadline #3301
+    /// established for the adjacent rejected-ACL cooldown.
+    static let validationCacheTTL: TimeInterval = 5 * 60
+    private static let validationCache =
+        OSAllocatedUnfairLock<[ValidationCacheKey: CachedValidation]>(initialState: [:])
 
     #if DEBUG
     /// Keyed by path so concurrently running suites cannot perturb each other's counts.
@@ -534,7 +559,7 @@ public enum KeychainAccessPreflight {
     private typealias SecTrustedApplicationValidateWithPathFunction = @convention(c) (
         SecTrustedApplication,
         UnsafePointer<CChar>) -> OSStatus
-    private typealias SecTrustedApplicationCopyDataFunction = @convention(c) (
+    private typealias SecTrustedApplicationCopyExternalRepresentationFunction = @convention(c) (
         SecTrustedApplication,
         UnsafeMutablePointer<Unmanaged<CFData>?>) -> OSStatus
 
