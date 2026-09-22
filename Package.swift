@@ -89,6 +89,7 @@ let package = Package(
                 ],
                 linkerSettings: sqlite3LinkerSettings + [
                     .linkedFramework("JavaScriptCore", .when(platforms: [.macOS])),
+                    .linkedFramework("ApplicationServices", .when(platforms: [.macOS])),
                 ]),
             .executableTarget(
                 name: "CodexBarCLI",

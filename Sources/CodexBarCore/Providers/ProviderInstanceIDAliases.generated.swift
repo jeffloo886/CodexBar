@@ -74,6 +74,7 @@ extension ProviderInstanceID {
     public static let ibmbob = UsageProvider.ibmbob.instanceID
     public static let nous = UsageProvider.nous.instanceID
     public static let muse = UsageProvider.muse.instanceID
+    public static let museapp = UsageProvider.museapp.instanceID
     public static let coderabbit = UsageProvider.coderabbit.instanceID
     public static let replicate = UsageProvider.replicate.instanceID
     public static let huggingface = UsageProvider.huggingface.instanceID

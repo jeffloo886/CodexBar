@@ -10,9 +10,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-6e5aff?style=flat-square)](LICENSE)
 [![Site](https://img.shields.io/badge/site-codexbar.app-16d3b4?style=flat-square)](https://codexbar.app)
 
-<a href="https://codexbar.app"><img src="docs/social.png" alt="CodexBar — every AI coding limit in your menu bar. 77 providers." width="100%" /></a>
+<a href="https://codexbar.app"><img src="docs/social.png" alt="CodexBar — every AI coding limit in your menu bar. 78 providers." width="100%" /></a>
 
-Tiny macOS 14+ menu bar app that keeps **AI coding-provider limits visible** and shows when each window resets. Codex, OpenAI, Claude, Cursor, Gemini, Copilot, Grok, GroqCloud, ElevenLabs, Deepgram, z.ai, MiniMax, Kiro, Zed, Vertex AI, Augment, OpenRouter, LiteLLM, LLM Proxy, Codebuff, Command Code, ClinePass, AWS Bedrock, and many newer coding providers. One status item per provider, or Merge Icons mode with a provider switcher. No Dock icon, minimal UI, dynamic bar icons.
+Tiny macOS 14+ menu bar app that keeps **AI coding-provider limits visible** and shows when each window resets. Codex, OpenAI, Claude, Cursor, Gemini, Copilot, Grok, GroqCloud, ElevenLabs, Deepgram, z.ai, MiniMax, Kiro, Zed, Vertex AI, Augment, OpenRouter, LiteLLM, LLM Proxy, Codebuff, Command Code, ClinePass, AWS Bedrock, Muse desktop, and many newer coding providers. One status item per provider, or Merge Icons mode with a provider switcher. No Dock icon, minimal UI, dynamic bar icons.
 
 Also available as a [Linux desktop app](Integrations/Linux/README.md) with usage and spending windows, separate settings, desktop notifications, and an optional tray icon. On Omarchy, a native bar widget shares the desktop app’s data and follows your theme.
 
@@ -163,6 +163,7 @@ See [CLI configuration](docs/cli-configuration.md) for the full flow.
 - [Notion AI](docs/notion.md) — Browser or manual cookies for rolling and monthly workspace allowances.
 - [Nous Portal](docs/nous.md) — Existing Hermes OAuth login for monthly credits and purchased top-ups.
 - [Muse Code](docs/muse.md) — Existing Muse CLI login for subscription quotas, plus local token history.
+- [Muse desktop](docs/muse-app.md) — Visible Muse Settings usage windows through the macOS Accessibility API; no credentials required.
 - [CodeRabbit](docs/coderabbit.md) — Local CLI usage report for review counts, billing state, and period resets.
 - [Replicate](docs/replicate.md) — Browser or manual cookies for monthly spend and optional prepaid credits.
 - [Hugging Face](docs/huggingface.md) — Access token for Inference Providers charges and optional ZeroGPU quota.
@@ -207,7 +208,7 @@ Wondering if CodexBar scans your disk? It doesn’t crawl your filesystem; it re
   supported. See [Keychain prompts](docs/keychain-prompts.md) for Allow Once vs. Always Allow, recurring grants, and
   safe troubleshooting.
 - **Files & Folders prompts (folder/volume access)**: CodexBar launches provider CLIs and local probes for some providers. If those helpers read a project directory or external drive, macOS may ask CodexBar for that folder/volume (e.g., Desktop or an external volume). This is driven by the helper’s working directory, not background disk scanning.
-- **What we do not request in the background**: no Screen Recording or Accessibility permissions; user-triggered helper actions may ask macOS for Automation permission to open Terminal. No passwords are stored (browser cookies are reused when you opt in).
+- **Accessibility (Muse desktop only)**: the optional Muse desktop provider needs Accessibility access to read the visible Muse Settings → General → Usage section. It does not read credentials, Keychain items, chat content, or keystrokes. Other providers do not request this permission. No Screen Recording permission is requested; user-triggered helper actions may ask macOS for Automation permission to open Terminal. No passwords are stored (browser cookies are reused when you opt in).
 
 ## Docs
 - Providers overview: [docs/providers.md](docs/providers.md)

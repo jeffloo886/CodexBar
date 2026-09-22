@@ -76,6 +76,7 @@ public enum ProviderManifest {
         IBMBobProviderDescriptor.descriptor,
         NousProviderDescriptor.descriptor,
         MuseProviderDescriptor.descriptor,
+        MuseAppProviderDescriptor.descriptor,
         CodeRabbitProviderDescriptor.descriptor,
         ReplicateProviderDescriptor.descriptor,
         HuggingFaceProviderDescriptor.descriptor,
